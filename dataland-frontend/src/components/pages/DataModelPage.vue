@@ -73,31 +73,37 @@ const selectedModelId = ref<string>(AVAILABLE_DATA_MODELS[0]?.id ?? '');
 const selectedModelLabel = ref<string>(AVAILABLE_DATA_MODELS[0]?.label ?? 'Data Model');
 const selectedDataModel = ref<any[]>([]);
 const loadingModel = ref(false);
+let latestLoadToken = 0;
 
 async function loadModel(id: string) {
+  const loadToken = ++latestLoadToken;
   const entry = AVAILABLE_DATA_MODELS.find((e) => e.id === id);
   if (!entry) {
-    selectedDataModel.value = [];
-    selectedModelLabel.value = 'Data Model';
+    if (loadToken === latestLoadToken) {
+      selectedDataModel.value = [];
+      selectedModelLabel.value = 'Data Model';
+    }
     return;
   }
-  selectedModelLabel.value = entry.label;
-  loadingModel.value = true;
+  if (loadToken === latestLoadToken) {
+    selectedModelLabel.value = entry.label;
+    loadingModel.value = true;
+  }
   try {
     if (entry.dataModel) {
-      selectedDataModel.value = entry.dataModel as any[];
+      if (loadToken === latestLoadToken) selectedDataModel.value = entry.dataModel as any[];
     } else if (entry.loader) {
       const mod = await entry.loader();
       const dm = await extractDataModel(mod);
-      selectedDataModel.value = dm ?? [];
+      if (loadToken === latestLoadToken) selectedDataModel.value = dm ?? [];
     } else {
-      selectedDataModel.value = [];
+      if (loadToken === latestLoadToken) selectedDataModel.value = [];
     }
   } catch (err) {
     // swallow errors and present empty model
-    selectedDataModel.value = [];
+    if (loadToken === latestLoadToken) selectedDataModel.value = [];
   } finally {
-    loadingModel.value = false;
+    if (loadToken === latestLoadToken) loadingModel.value = false;
   }
 }
 
