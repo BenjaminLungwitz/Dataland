@@ -8,8 +8,29 @@
           <select id="modelSelect" v-model="selectedModelId">
             <option v-for="m in AVAILABLE_DATA_MODELS" :key="m.id" :value="m.id">{{ m.label }}</option>
           </select>
-          <span v-if="loadingModel">Loading…</span>
+          <span v-if="activeTab === 'frontend' ? loadingModel : loadingBackendModel">Loading…</span>
         </div>
+      </div>
+
+      <div class="tabs-row" role="tablist" aria-label="Data model source tabs">
+        <button
+          type="button"
+          :class="['tab-button', { active: activeTab === 'frontend' }]"
+          role="tab"
+          :aria-selected="activeTab === 'frontend'"
+          @click="activeTab = 'frontend'"
+        >
+          DATA MODEL
+        </button>
+        <button
+          type="button"
+          :class="['tab-button', { active: activeTab === 'backend' }]"
+          role="tab"
+          :aria-selected="activeTab === 'backend'"
+          @click="activeTab = 'backend'"
+        >
+          DATA MODEL BACKEND
+        </button>
       </div>
 
       <div class="search-row">
@@ -43,7 +64,13 @@
                 <td class="col-description">{{ row.description ?? '' }}</td>
               </tr>
               <tr v-if="filteredRows.length === 0">
-                <td colspan="5">No results</td>
+                <td colspan="5">
+                  {{
+                    activeTab === 'backend' && !loadingBackendModel
+                      ? 'No backend specification available for this model.'
+                      : 'No results'
+                  }}
+                </td>
               </tr>
             </tbody>
           </table>
@@ -64,15 +91,19 @@ interface Row {
   fieldName: string;
   label?: string;
   component?: string;
+  type?: string;
   description?: string;
 }
 
 const q = ref('');
+const activeTab = ref<'frontend' | 'backend'>('frontend');
 
 const selectedModelId = ref<string>(AVAILABLE_DATA_MODELS[0]?.id ?? '');
 const selectedModelLabel = ref<string>(AVAILABLE_DATA_MODELS[0]?.label ?? 'Data Model');
 const selectedDataModel = ref<any[]>([]);
+const selectedBackendSchema = ref<Record<string, unknown> | null>(null);
 const loadingModel = ref(false);
+const loadingBackendModel = ref(false);
 let latestLoadToken = 0;
 
 async function loadModel(id: string) {
@@ -107,13 +138,58 @@ async function loadModel(id: string) {
   }
 }
 
+async function loadBackendModel(id: string): Promise<void> {
+  loadingBackendModel.value = true;
+  try {
+    const resolvedSchemaResponse = await fetch(`/specifications/frameworks/${id}/resolved-schema`);
+    if (resolvedSchemaResponse.ok) {
+      const resolvedSchema = (await resolvedSchemaResponse.json()) as Record<string, unknown>;
+      selectedBackendSchema.value = normalizeSchemaPayload(resolvedSchema);
+      return;
+    }
+
+    const specificationResponse = await fetch(`/specifications/frameworks/${id}`);
+    if (!specificationResponse.ok) {
+      selectedBackendSchema.value = null;
+      return;
+    }
+    const specification = (await specificationResponse.json()) as Record<string, unknown>;
+    selectedBackendSchema.value = normalizeSchemaPayload(specification);
+  } catch (_error) {
+    selectedBackendSchema.value = null;
+  } finally {
+    loadingBackendModel.value = false;
+  }
+}
+
+function normalizeSchemaPayload(payload: Record<string, unknown>): Record<string, unknown> | null {
+  const candidate = payload.schema;
+  if (candidate && typeof candidate === 'object') {
+    return candidate as Record<string, unknown>;
+  }
+
+  const payloadValues = Object.values(payload);
+  const containsSchemaLeafValues = payloadValues.some((value) => typeof value === 'string' || typeof value === 'object');
+  if (containsSchemaLeafValues) {
+    return payload;
+  }
+
+  return null;
+}
+
 onMounted(() => {
-  if (selectedModelId.value) loadModel(selectedModelId.value);
+  if (selectedModelId.value) {
+    void loadModel(selectedModelId.value);
+    void loadBackendModel(selectedModelId.value);
+  }
 });
 
-watch(selectedModelId, (v) => loadModel(v));
+watch(selectedModelId, (v) => {
+  void loadModel(v);
+  void loadBackendModel(v);
+});
 
-const rows = computed<Row[]>(() => {
+const frontendRows = computed<Row[]>(() => {
   const out: Row[] = [];
   (selectedDataModel.value as any[]).forEach((category: any) => {
     const catName = category.name ?? category.label ?? 'category';
@@ -134,6 +210,42 @@ const rows = computed<Row[]>(() => {
   return out;
 });
 
+function flattenBackendSchemaNode(schemaNode: unknown, currentPath: string, rows: Row[]): void {
+  if (!schemaNode || typeof schemaNode !== 'object') {
+    return;
+  }
+
+  for (const [key, value] of Object.entries(schemaNode)) {
+    const nextPath = currentPath ? `${currentPath}.${key}` : key;
+
+    if (typeof value === 'string') {
+      rows.push({
+        id: nextPath,
+        objectPath: currentPath,
+        fieldName: key,
+        type: value,
+      });
+      continue;
+    }
+
+    flattenBackendSchemaNode(value, nextPath, rows);
+  }
+}
+
+const backendRows = computed<Row[]>(() => {
+  if (!selectedBackendSchema.value) {
+    return [];
+  }
+
+  const out: Row[] = [];
+  flattenBackendSchemaNode(selectedBackendSchema.value, '', out);
+  return out;
+});
+
+const rows = computed<Row[]>(() => {
+  return activeTab.value === 'frontend' ? frontendRows.value : backendRows.value;
+});
+
 const filteredRows = computed(() => {
   const term = q.value.trim().toLowerCase();
   if (!term) return rows.value;
@@ -143,6 +255,7 @@ const filteredRows = computed(() => {
       String(r.fieldName).toLowerCase().includes(term) ||
       String(r.label ?? '').toLowerCase().includes(term) ||
       String(r.component ?? '').toLowerCase().includes(term) ||
+      String(r.type ?? '').toLowerCase().includes(term) ||
       String(r.description ?? '').toLowerCase().includes(term)
     );
   });
@@ -161,6 +274,26 @@ const filteredRows = computed(() => {
   display: flex;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
+}
+
+.tabs-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.tab-button {
+  border: 1px solid var(--input-separator, #e6e6e6);
+  background: var(--default-neutral-white, #fff);
+  color: inherit;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+  border-radius: 0.2rem;
+}
+
+.tab-button.active {
+  background: var(--table-background-hover-color-light, #f4f6f8);
+  font-weight: 600;
 }
 
 .header-row {
